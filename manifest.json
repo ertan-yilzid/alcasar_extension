@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "ALCASAR Auto Login",
+  "version": "1.0.0",
+  "description": "Automatically authenticate to ALCASAR portal at alcasar.laplateforme.io",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://alcasar.laplateforme.io/*",
+    "https://alcasar.laplateforme.io:3991/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://alcasar.laplateforme.io/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
