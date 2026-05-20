@@ -11,7 +11,7 @@
 ## Configuration
 
 1. Clique sur l'icône de l'extension dans la barre d'outils.
-2. Clique sur l'icône ⚙️ (engrenage).
+2. Clique sur l'icône ⚙️.
 3. Rentre ton email et ton mot de passe Alcasar et clique "SAVE".
 4. C'est bon, c'est enregistré.
 
