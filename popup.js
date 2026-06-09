@@ -1,19 +1,26 @@
-// N3: track whether the popup is still open so stale poll loops exit cleanly
 let _popupAlive = true;
 window.addEventListener('unload', () => { _popupAlive = false; });
 
-// B2: track whether a poll is already running to prevent parallel instances
-let _polling = false;
-
 document.addEventListener('DOMContentLoaded', async () => {
+
+  // ── Listen for login result pushed directly from background ───────────────
+  // Registered FIRST — before any async work — so no message can slip through
+  // during an awaited gap. Background pushes this as soon as it sees res=failed
+  // or res=success in the redirect URL.
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request.action !== 'loginResult') return;
+    if (request.error) {
+      setButtonState('idle', null);
+      showLoginStatus(request.error, 'error');
+    }
+    // success is handled by checkAndApplyLoginState on reopen
+  });
 
   // ── Load saved credentials + toggle state ─────────────────────────────────
   try {
     const data = await chrome.storage.local.get(['username', 'password', 'floatingBtnEnabled']);
-
     if (data.username) document.getElementById('username').value = data.username;
     if (data.password) document.getElementById('password').value = data.password;
-
     document.getElementById('floatingToggle').checked = data.floatingBtnEnabled !== false;
   } catch (error) {
     console.error('error loading:', error);
@@ -22,7 +29,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Check login status on popup open ──────────────────────────────────────
   await checkAndApplyLoginState();
 
-  // ── Settings gear ──────────────────────────────────────────────────────────
+  // ── Settings gear ─────────────────────────────────────────────────────────
   document.getElementById('settingsBtn').addEventListener('click', () => {
     const panel = document.getElementById('settingsPanel');
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -31,10 +38,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ── Floating button toggle ─────────────────────────────────────────────────
   document.getElementById('floatingToggle').addEventListener('change', async (e) => {
     const enabled = e.target.checked;
-
     try {
       await chrome.storage.local.set({ floatingBtnEnabled: enabled });
-
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab && tab.url && tab.url.includes('alcasar.laplateforme.io')) {
         chrome.tabs.sendMessage(tab.id, { action: 'setFloatingBtn', visible: enabled });
@@ -55,9 +60,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.runtime.sendMessage({ action: 'startLogin' }, (response) => {
         if (response && response.alreadyLoggedIn) {
           setButtonState('connected', response.userName);
+        } else if (response && response.noCredentials) {
+          setButtonState('idle', null);
+          showLoginStatus('no credentials saved', 'error');
+          document.getElementById('settingsPanel').style.display = 'block';
+        } else if (response && !response.success) {
+          setButtonState('idle', null);
+          showLoginStatus(response.message, 'error');
         } else {
-          // B2: only start a poll if one isn't already running
-          pollUntilConnected();
+          // Login attempt started — poll storage every second.
+          // The background also pushes a loginResult message directly,
+          // but polling storage is the reliable fallback when the popup
+          // survives the tab navigation (e.g. already on intercept.php).
+          pollUntilDone();
         }
       });
     } catch (error) {
@@ -90,9 +105,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ── Button state helpers ──────────────────────────────────────────────────────
 
 function setButtonState(state, userName) {
-  const button  = document.getElementById('loginNow');
-  const subEl   = document.getElementById('btnSub');
-  const mainEl  = document.getElementById('btnMain');
+  const button = document.getElementById('loginNow');
+  const subEl  = document.getElementById('btnSub');
+  const mainEl = document.getElementById('btnMain');
 
   if (state === 'idle') {
     button.disabled = false;
@@ -128,66 +143,75 @@ function setButtonState(state, userName) {
   }
 }
 
-// ── Status check ─────────────────────────────────────────────────────────────
+// ── Status check on popup open ────────────────────────────────────────────────
 
 async function checkAndApplyLoginState() {
   try {
-    // B1 + N1: read both status and the loginInProgress flag together
     const [status, storageData] = await Promise.all([
       chrome.runtime.sendMessage({ action: 'checkStatus' }),
-      chrome.storage.local.get(['loginInProgress'])
+      chrome.storage.local.get(['loginInProgress', 'loginError'])
     ]);
 
     if (status && status.clientState === 1) {
-      // N1: if we're already connected, clear any stale loginInProgress flag
-      // (left over from a previous session where the service worker was killed
-      // mid-login or the tab load timed out)
-      if (storageData.loginInProgress) {
-        chrome.storage.local.remove('loginInProgress');
-      }
+      await chrome.storage.local.remove(['loginInProgress', 'loginError']);
       setButtonState('connected', status.userName);
 
+    } else if (storageData.loginError) {
+      // Popup was closed during login and reopened after failure
+      const msg = storageData.loginError;
+      await chrome.storage.local.remove('loginError');
+      setButtonState('idle', null);
+      showLoginStatus(msg, 'error');
+
     } else if (storageData.loginInProgress) {
-      // B1: only show loading and poll when the flag is explicitly set —
-      // not merely because an ALCASAR tab happens to be open
+      // Login still in flight — show loading and poll
       setButtonState('loading', null);
-      pollUntilConnected(); // B2: first (and only) poll started here
+      pollUntilDone();
 
     } else {
       setButtonState('idle', null);
-      // No poll needed — user hasn't started a login
     }
   } catch (error) {
     console.error('status check error:', error);
   }
 }
 
-async function pollUntilConnected() {
-  // B2: if a poll is already running, don't start another one
+// Polls storage every second for loginError or connected state.
+// Runs alongside the loginResult message listener — whichever fires first wins.
+let _polling = false;
+async function pollUntilDone() {
   if (_polling) return;
   _polling = true;
 
   try {
     const maxAttempts = 30;
     for (let i = 0; i < maxAttempts; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-
-      // N3: stop if the popup has been closed
+      if (i > 0) await new Promise(r => setTimeout(r, 1000));
       if (!_popupAlive) return;
 
       try {
-        const status = await chrome.runtime.sendMessage({ action: 'checkStatus' });
+        const [status, stored] = await Promise.all([
+          chrome.runtime.sendMessage({ action: 'checkStatus' }),
+          chrome.storage.local.get('loginError')
+        ]);
+
+        if (stored.loginError) {
+          const msg = stored.loginError;
+          await chrome.storage.local.remove('loginError');
+          setButtonState('idle', null);
+          showLoginStatus(msg, 'error');
+          return;
+        }
+
         if (status && status.clientState === 1) {
           setButtonState('connected', status.userName);
           return;
         }
       } catch (_) {
-        // Extension context invalidated — popup is closing
         return;
       }
     }
 
-    // Timed out — reset to idle if the button is still in loading state
     if (_popupAlive) {
       const btn = document.getElementById('loginNow');
       if (btn && btn.disabled) setButtonState('idle', null);
@@ -201,14 +225,16 @@ async function pollUntilConnected() {
 
 function showStatus(message, type) {
   const el = document.getElementById('status');
-  el.textContent = message;
-  el.className   = `status ${type}`;
-  setTimeout(() => { el.className = 'status'; el.style.display = 'none'; }, 3000);
+  el.textContent   = message;
+  el.style.display = '';
+  el.className     = `status ${type}`;
+  setTimeout(() => { el.className = 'status'; }, 3000);
 }
 
 function showLoginStatus(message, type) {
   const el = document.getElementById('loginStatus');
-  el.textContent = message;
-  el.className   = `status ${type}`;
-  setTimeout(() => { el.className = 'status'; el.style.display = 'none'; }, 3000);
+  el.textContent   = message;
+  el.style.display = '';
+  el.className     = `status ${type}`;
+  setTimeout(() => { el.className = 'status'; }, 3000);
 }
