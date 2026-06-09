@@ -1,240 +1,312 @@
-let _popupAlive = true;
-window.addEventListener('unload', () => { _popupAlive = false; });
+// ── Login form fill ──────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', async () => {
-
-  // ── Listen for login result pushed directly from background ───────────────
-  // Registered FIRST — before any async work — so no message can slip through
-  // during an awaited gap. Background pushes this as soon as it sees res=failed
-  // or res=success in the redirect URL.
-  chrome.runtime.onMessage.addListener((request) => {
-    if (request.action !== 'loginResult') return;
-    if (request.error) {
-      setButtonState('idle', null);
-      showLoginStatus(request.error, 'error');
-    }
-    // success is handled by checkAndApplyLoginState on reopen
-  });
-
-  // ── Load saved credentials + toggle state ─────────────────────────────────
+async function performLogin() {
   try {
-    const data = await chrome.storage.local.get(['username', 'password', 'floatingBtnEnabled']);
-    if (data.username) document.getElementById('username').value = data.username;
-    if (data.password) document.getElementById('password').value = data.password;
-    document.getElementById('floatingToggle').checked = data.floatingBtnEnabled !== false;
+    const data = await chrome.storage.local.get(['username', 'password', 'autoSubmit']);
+
+    if (!data.username || !data.password) {
+      return { success: false, message: 'no credentials saved' };
+    }
+
+    const usernameField = document.querySelector('input[name="username"], input[type="text"], input#username');
+    const passwordField = document.querySelector('input[name="password"], input[type="password"], input#password');
+    const submitButton  = document.querySelector('input[type="submit"], button[type="submit"], button');
+
+    if (usernameField && passwordField) {
+      usernameField.value = data.username;
+      passwordField.value = data.password;
+
+      usernameField.dispatchEvent(new Event('input', { bubbles: true }));
+      passwordField.dispatchEvent(new Event('input', { bubbles: true }));
+
+      if (data.autoSubmit && submitButton) {
+        setTimeout(() => { submitButton.click(); }, 500);
+        return { success: true, message: 'logging in...' };
+      } else {
+        return { success: true, message: 'filled in, click login' };
+      }
+    } else {
+      return { success: false, message: 'no form found' };
+    }
   } catch (error) {
-    console.error('error loading:', error);
+    return { success: false, message: 'error: ' + error.message };
+  }
+}
+
+// ── Message listener ─────────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'login') {
+    performLogin().then(result => { sendResponse(result); });
+    return true;
   }
 
-  // ── Check login status on popup open ──────────────────────────────────────
-  await checkAndApplyLoginState();
-
-  // ── Settings gear ─────────────────────────────────────────────────────────
-  document.getElementById('settingsBtn').addEventListener('click', () => {
-    const panel = document.getElementById('settingsPanel');
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-  });
-
-  // ── Floating button toggle ─────────────────────────────────────────────────
-  document.getElementById('floatingToggle').addEventListener('change', async (e) => {
-    const enabled = e.target.checked;
-    try {
-      await chrome.storage.local.set({ floatingBtnEnabled: enabled });
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && tab.url && tab.url.includes('alcasar.laplateforme.io')) {
-        chrome.tabs.sendMessage(tab.id, { action: 'setFloatingBtn', visible: enabled });
-      }
-    } catch (error) {
-      console.error('toggle error:', error);
+  if (request.action === 'setFloatingBtn') {
+    if (request.visible) {
+      injectFloatingButton();
+    } else {
+      removeFloatingButton();
     }
-  });
+    sendResponse({ ok: true });
+    return true;
+  }
 
-  // ── Login button ───────────────────────────────────────────────────────────
-  document.getElementById('loginNow').addEventListener('click', async () => {
-    const button = document.getElementById('loginNow');
-    if (button.disabled) return;
-
-    setButtonState('loading', null);
-
-    try {
-      chrome.runtime.sendMessage({ action: 'startLogin' }, (response) => {
-        if (response && response.alreadyLoggedIn) {
-          setButtonState('connected', response.userName);
-        } else if (response && response.noCredentials) {
-          setButtonState('idle', null);
-          showLoginStatus('no credentials saved', 'error');
-          document.getElementById('settingsPanel').style.display = 'block';
-        } else if (response && !response.success) {
-          setButtonState('idle', null);
-          showLoginStatus(response.message, 'error');
-        } else {
-          // Login attempt started — poll storage every second.
-          // The background also pushes a loginResult message directly,
-          // but polling storage is the reliable fallback when the popup
-          // survives the tab navigation (e.g. already on intercept.php).
-          pollUntilDone();
-        }
-      });
-    } catch (error) {
-      console.error('error:', error);
-      showLoginStatus('error: ' + error.message, 'error');
-      setButtonState('idle', null);
-    }
-  });
-
-  // ── Save credentials ───────────────────────────────────────────────────────
-  document.getElementById('saveCredentials').addEventListener('click', async () => {
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value;
-
-    if (!username || !password) {
-      showStatus('fill in both fields', 'error');
-      return;
-    }
-
-    try {
-      await chrome.storage.local.set({ username, password, autoSubmit: true });
-      showStatus('saved!', 'success');
-    } catch (error) {
-      console.error('error saving:', error);
-      showStatus('failed to save', 'error');
-    }
-  });
+  // Background pushes this when login succeeds on another tab (e.g. popup
+  // triggered login while user was on a non-alcasar page — the login tab
+  // gets redirected to intra, but alcasar tabs with the floating button
+  // still need to update their state).
+  if (request.action === 'loginResult' && request.success) {
+    const btn = document.getElementById(BTN_ID);
+    if (btn) setButtonState(btn, 'connected', request.userName);
+  }
 });
 
-// ── Button state helpers ──────────────────────────────────────────────────────
+// ── Floating button ──────────────────────────────────────────────────────────
 
-function setButtonState(state, userName) {
-  const button = document.getElementById('loginNow');
-  const subEl  = document.getElementById('btnSub');
-  const mainEl = document.getElementById('btnMain');
+const BTN_ID = 'alcasar-float-btn';
+const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif";
+
+const BASE_STYLE = `
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 2147483647;
+  font-family: ${FONT};
+  width: 120px;
+  height: 48px;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22);
+  transition: background 0.2s, opacity 0.2s;
+  padding: 0;
+`;
+
+function removeFloatingButton() {
+  const el = document.getElementById(BTN_ID);
+  if (el) el.remove();
+}
+
+function setButtonState(btn, state, userName) {
+  btn.innerHTML = '';
 
   if (state === 'idle') {
-    button.disabled = false;
-    subEl.textContent = '';
-    subEl.classList.remove('visible');
-    mainEl.textContent = 'Login';
-    mainEl.style.fontSize = '13px';
-    mainEl.style.letterSpacing = '1.2px';
-    mainEl.style.opacity = '1';
+    btn.disabled = false;
+    btn.style.background = '#0066FF';
+    btn.style.cursor = 'pointer';
+    btn.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'LOGIN';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '12px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '1.5px';
+    btn.appendChild(label);
 
   } else if (state === 'loading') {
-    button.disabled = true;
-    subEl.textContent = '';
-    subEl.classList.remove('visible');
-    mainEl.textContent = 'Logging in...';
-    mainEl.style.fontSize = '11px';
-    mainEl.style.letterSpacing = '1px';
-    mainEl.style.opacity = '0.45';
+    btn.disabled = true;
+    btn.style.background = '#0066FF';
+    btn.style.cursor = 'not-allowed';
+    btn.style.opacity = '0.55';
+
+    const label = document.createElement('span');
+    label.textContent = 'LOGGING IN';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '11px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '1px';
+    btn.appendChild(label);
+
+  } else if (state === 'error') {
+    btn.disabled = true;
+    btn.style.background = '#FF4433';
+    btn.style.cursor = 'default';
+    btn.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'WRONG CREDENTIALS';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '9px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '0.6px';
+    btn.appendChild(label);
+
+  } else if (state === 'no-credentials') {
+    btn.disabled = true;
+    btn.style.background = '#FF4433';
+    btn.style.cursor = 'default';
+    btn.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'NO CREDENTIALS';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '10px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '0.8px';
+    btn.appendChild(label);
 
   } else if (state === 'connected') {
-    button.disabled = true;
-    const displayName = userName ? userName.split('@')[0].toUpperCase() : null;
-    if (displayName) {
-      subEl.textContent = displayName;
-      subEl.classList.add('visible');
-    } else {
-      subEl.classList.remove('visible');
+    btn.disabled = true;
+    btn.style.background = '#f4f4f4';
+    btn.style.cursor = 'default';
+    btn.style.opacity = '1';
+
+    if (userName) {
+      const name = document.createElement('span');
+      name.textContent = userName.split('@')[0].toUpperCase();
+      name.style.fontFamily = FONT;
+      name.style.color = '#0066FF';
+      name.style.fontSize = '9px';
+      name.style.fontWeight = '600';
+      name.style.letterSpacing = '0.8px';
+      name.style.opacity = '0.7';
+      btn.appendChild(name);
     }
-    mainEl.textContent = 'Connected';
-    mainEl.style.fontSize = '11px';
-    mainEl.style.letterSpacing = '1.2px';
-    mainEl.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'CONNECTED';
+    label.style.fontFamily = FONT;
+    label.style.color = '#0066FF';
+    label.style.fontSize = '11px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '1.2px';
+    btn.appendChild(label);
   }
 }
 
-// ── Status check on popup open ────────────────────────────────────────────────
+// N2: semaphore prevents two concurrent injectFloatingButton() calls from both
+// passing the DOM guard, both awaiting, and both appending a button.
+let _injecting = false;
 
-async function checkAndApplyLoginState() {
+async function injectFloatingButton() {
+  if (document.getElementById(BTN_ID) || _injecting) return;
+  _injecting = true;
+
   try {
-    const [status, storageData] = await Promise.all([
-      chrome.runtime.sendMessage({ action: 'checkStatus' }),
-      chrome.storage.local.get(['loginInProgress', 'loginError'])
-    ]);
+    let clientState = -1;
+    let userName    = null;
+    let loginInProgress = false;
+    let loginError  = null;
 
-    if (status && status.clientState === 1) {
-      await chrome.storage.local.remove(['loginInProgress', 'loginError']);
-      setButtonState('connected', status.userName);
+    try {
+      const [statusRes, storageRes] = await Promise.all([
+        chrome.runtime.sendMessage({ action: 'checkStatus' }),
+        chrome.storage.local.get(['loginInProgress', 'loginError'])
+      ]);
+      clientState     = statusRes.clientState;
+      userName        = statusRes.userName;
+      loginInProgress = !!storageRes.loginInProgress;
+      loginError      = storageRes.loginError || null;
+    } catch (_) { /* no-op */ }
 
-    } else if (storageData.loginError) {
-      // Popup was closed during login and reopened after failure
-      const msg = storageData.loginError;
-      await chrome.storage.local.remove('loginError');
-      setButtonState('idle', null);
-      showLoginStatus(msg, 'error');
+    if (document.getElementById(BTN_ID)) return;
 
-    } else if (storageData.loginInProgress) {
-      // Login still in flight — show loading and poll
-      setButtonState('loading', null);
-      pollUntilDone();
+    const btn = document.createElement('button');
+    btn.id = BTN_ID;
+    btn.style.cssText = BASE_STYLE;
 
+    btn.addEventListener('mouseenter', () => {
+      if (!btn.disabled) btn.style.background = '#0052CC';
+    });
+    btn.addEventListener('mouseleave', () => {
+      if (!btn.disabled) btn.style.background = '#0066FF';
+    });
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      setButtonState(btn, 'loading', null);
+      chrome.runtime.sendMessage({ action: 'startLogin' }, (response) => {
+        if (response && response.alreadyLoggedIn) {
+          setButtonState(btn, 'connected', response.userName);
+        } else if (response && response.noCredentials) {
+          setButtonState(btn, 'no-credentials', null);
+          setTimeout(() => {
+            if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+          }, 2000);
+        } else {
+          pollFloatingUntilConnected(btn);
+        }
+      });
+    });
+
+    // Set initial visual state
+    if (clientState === 1) {
+      setButtonState(btn, 'connected', userName);
+    } else if (loginError) {
+      // A failed login was detected before the button was injected —
+      // show the error briefly then return to idle
+      chrome.storage.local.remove('loginError');
+      setButtonState(btn, 'error', null);
+      setTimeout(() => {
+        if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+      }, 3000);
+    } else if (loginInProgress) {
+      setButtonState(btn, 'loading', null);
+      pollFloatingUntilConnected(btn);
     } else {
-      setButtonState('idle', null);
+      setButtonState(btn, 'idle', null);
     }
-  } catch (error) {
-    console.error('status check error:', error);
+
+    document.body.appendChild(btn);
+  } finally {
+    _injecting = false;
   }
 }
 
-// Polls storage every second for loginError or connected state.
-// Runs alongside the loginResult message listener — whichever fires first wins.
-let _polling = false;
-async function pollUntilDone() {
-  if (_polling) return;
-  _polling = true;
+async function pollFloatingUntilConnected(btn) {
+  const maxAttempts = 30;
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (!document.getElementById(BTN_ID)) return;
 
-  try {
-    const maxAttempts = 30;
-    for (let i = 0; i < maxAttempts; i++) {
-      if (i > 0) await new Promise(r => setTimeout(r, 1000));
-      if (!_popupAlive) return;
+    try {
+      // Check both error and success on every tick
+      const [status, stored] = await Promise.all([
+        chrome.runtime.sendMessage({ action: 'checkStatus' }),
+        chrome.storage.local.get('loginError')
+      ]);
 
-      try {
-        const [status, stored] = await Promise.all([
-          chrome.runtime.sendMessage({ action: 'checkStatus' }),
-          chrome.storage.local.get('loginError')
-        ]);
-
-        if (stored.loginError) {
-          const msg = stored.loginError;
-          await chrome.storage.local.remove('loginError');
-          setButtonState('idle', null);
-          showLoginStatus(msg, 'error');
-          return;
-        }
-
-        if (status && status.clientState === 1) {
-          setButtonState('connected', status.userName);
-          return;
-        }
-      } catch (_) {
+      if (stored.loginError) {
+        await chrome.storage.local.remove('loginError');
+        setButtonState(btn, 'error', null);
+        setTimeout(() => {
+          if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+        }, 3000);
         return;
       }
-    }
 
-    if (_popupAlive) {
-      const btn = document.getElementById('loginNow');
-      if (btn && btn.disabled) setButtonState('idle', null);
-    }
-  } finally {
-    _polling = false;
+      if (status && status.clientState === 1) {
+        setButtonState(btn, 'connected', status.userName);
+        // Background will redirect this tab to intra; nothing to do here
+        return;
+      }
+    } catch (_) { return; }
   }
+
+  // Timed out — restore idle
+  setButtonState(btn, 'idle', null);
 }
 
-// ── Status toasts ─────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 
-function showStatus(message, type) {
-  const el = document.getElementById('status');
-  el.textContent   = message;
-  el.style.display = '';
-  el.className     = `status ${type}`;
-  setTimeout(() => { el.className = 'status'; }, 3000);
-}
-
-function showLoginStatus(message, type) {
-  const el = document.getElementById('loginStatus');
-  el.textContent   = message;
-  el.style.display = '';
-  el.className     = `status ${type}`;
-  setTimeout(() => { el.className = 'status'; }, 3000);
-}
+(async () => {
+  try {
+    const data = await chrome.storage.local.get(['floatingBtnEnabled']);
+    const enabled = data.floatingBtnEnabled !== false;
+    if (enabled) injectFloatingButton();
+  } catch (_) { /* no-op */ }
+})();
