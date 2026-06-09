@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ALCASAR Auto Login",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Automatically authenticate to ALCASAR portal at alcasar.laplateforme.io",
   "permissions": [
     "storage",
