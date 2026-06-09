@@ -11,11 +11,13 @@
 ## Configuration
 
 1. Clique sur l'icône de l'extension dans la barre d'outils.
-2. Clique sur l'icône ⚙️.
-3. Rentre ton email et ton mot de passe Alcasar et clique "SAVE".
+2. Clique sur l'icône ⚙️ (engrenage).
+3. Rentre ton email et ton mot de passe Alcasar et clique save.
 4. C'est bon, c'est enregistré.
 
 ## Utilisation
 
-1. Une fois que c'est configuré, clique sur "LOGIN".
+1. Une fois que c'est configuré, clique sur "Connexion".
 2. T'es connecté au portail ALCASAR automatiquement.
+
+Un bouton flottant apparaît aussi en bas à droite des pages Alcasar pour faciliter la connexion. Tu peux le désactiver depuis ⚙️.
