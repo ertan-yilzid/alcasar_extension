@@ -118,6 +118,38 @@ function setButtonState(btn, state, userName) {
     label.style.letterSpacing = '1px';
     btn.appendChild(label);
 
+  } else if (state === 'error') {
+    btn.disabled = true;
+    btn.style.background = '#FF4433';
+    btn.style.cursor = 'default';
+    btn.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'WRONG CREDENTIALS';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '9px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '0.6px';
+    btn.appendChild(label);
+
+  } else if (state === 'no-credentials') {
+    btn.disabled = true;
+    btn.style.background = '#FF4433';
+    btn.style.cursor = 'default';
+    btn.style.opacity = '1';
+
+    const label = document.createElement('span');
+    label.textContent = 'NO CREDENTIALS';
+    label.style.fontFamily = FONT;
+    label.style.color = '#ffffff';
+    label.style.fontSize = '10px';
+    label.style.fontWeight = '700';
+    label.style.textTransform = 'uppercase';
+    label.style.letterSpacing = '0.8px';
+    btn.appendChild(label);
+
   } else if (state === 'connected') {
     btn.disabled = true;
     btn.style.background = '#f4f4f4';
@@ -148,13 +180,11 @@ function setButtonState(btn, state, userName) {
   }
 }
 
-// N2: semaphore prevents two concurrent injectFloatingButton() calls (e.g. SPA
-// navigation firing the content script twice) from both passing the DOM guard,
-// both awaiting, and both appending a button.
+// N2: semaphore prevents two concurrent injectFloatingButton() calls from both
+// passing the DOM guard, both awaiting, and both appending a button.
 let _injecting = false;
 
 async function injectFloatingButton() {
-  // N2: bail if a button already exists OR an injection is already in flight
   if (document.getElementById(BTN_ID) || _injecting) return;
   _injecting = true;
 
@@ -162,27 +192,25 @@ async function injectFloatingButton() {
     let clientState = -1;
     let userName    = null;
     let loginInProgress = false;
+    let loginError  = null;
 
     try {
       const [statusRes, storageRes] = await Promise.all([
         chrome.runtime.sendMessage({ action: 'checkStatus' }),
-        chrome.storage.local.get(['loginInProgress'])
+        chrome.storage.local.get(['loginInProgress', 'loginError'])
       ]);
       clientState     = statusRes.clientState;
       userName        = statusRes.userName;
       loginInProgress = !!storageRes.loginInProgress;
+      loginError      = storageRes.loginError || null;
     } catch (_) { /* no-op */ }
 
-    // Check again after the async gap — another call may have won the race
     if (document.getElementById(BTN_ID)) return;
 
     const btn = document.createElement('button');
     btn.id = BTN_ID;
     btn.style.cssText = BASE_STYLE;
 
-    // B4: attach hover and click listeners unconditionally so they are always
-    // present, even when the button starts in loading state and later times out
-    // back to idle. btn.disabled guards already prevent action in wrong states.
     btn.addEventListener('mouseenter', () => {
       if (!btn.disabled) btn.style.background = '#0052CC';
     });
@@ -195,15 +223,28 @@ async function injectFloatingButton() {
       chrome.runtime.sendMessage({ action: 'startLogin' }, (response) => {
         if (response && response.alreadyLoggedIn) {
           setButtonState(btn, 'connected', response.userName);
+        } else if (response && response.noCredentials) {
+          setButtonState(btn, 'no-credentials', null);
+          setTimeout(() => {
+            if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+          }, 2000);
         } else {
           pollFloatingUntilConnected(btn);
         }
       });
     });
 
-    // Set initial visual state only — listeners are already attached above
+    // Set initial visual state
     if (clientState === 1) {
       setButtonState(btn, 'connected', userName);
+    } else if (loginError) {
+      // A failed login was detected before the button was injected —
+      // show the error briefly then return to idle
+      chrome.storage.local.remove('loginError');
+      setButtonState(btn, 'error', null);
+      setTimeout(() => {
+        if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+      }, 3000);
     } else if (loginInProgress) {
       setButtonState(btn, 'loading', null);
       pollFloatingUntilConnected(btn);
@@ -221,17 +262,32 @@ async function pollFloatingUntilConnected(btn) {
   const maxAttempts = 30;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise(r => setTimeout(r, 1000));
-    if (!document.getElementById(BTN_ID)) return; // button removed, stop
+    if (!document.getElementById(BTN_ID)) return;
+
     try {
-      const status = await chrome.runtime.sendMessage({ action: 'checkStatus' });
+      // Check both error and success on every tick
+      const [status, stored] = await Promise.all([
+        chrome.runtime.sendMessage({ action: 'checkStatus' }),
+        chrome.storage.local.get('loginError')
+      ]);
+
+      if (stored.loginError) {
+        await chrome.storage.local.remove('loginError');
+        setButtonState(btn, 'error', null);
+        setTimeout(() => {
+          if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
+        }, 3000);
+        return;
+      }
+
       if (status && status.clientState === 1) {
         setButtonState(btn, 'connected', status.userName);
         return;
       }
     } catch (_) { return; }
   }
-  // Timed out — restore idle so the button can be clicked again (B4 fix means
-  // listeners are already attached, so this just re-enables the button)
+
+  // Timed out — restore idle
   setButtonState(btn, 'idle', null);
 }
 
