@@ -12,29 +12,46 @@
       <h1>ALCASAR Login</h1>
       <button id="settingsBtn" class="btn-settings" title="settings">⚙️</button>
     </div>
-    
+
     <div id="loginSection" class="login-section">
-      <button id="loginNow" class="btn-login">Login</button>
+      <!-- Two-line structure: name sits above, state below. JS fills these. -->
+      <button id="loginNow" class="btn-login">
+        <span id="btnSub" class="btn-sub"></span>
+        <span id="btnMain" class="btn-main">Login</span>
+      </button>
       <div id="loginStatus" class="status"></div>
     </div>
-    
-    <form id="credentialsForm" style="display: none;">
+
+    <!-- Settings panel (gear) — credentials + floating toggle inside -->
+    <div id="settingsPanel" style="display:none;">
+      <div class="divider"></div>
+
       <div class="form-group">
         <label for="username">username</label>
-        <input type="text" id="username" name="username" placeholder="your username" required>
+        <input type="text" id="username" name="username" placeholder="your username">
       </div>
-      
+
       <div class="form-group">
         <label for="password">password</label>
-        <input type="password" id="password" name="password" placeholder="your password" required>
+        <input type="password" id="password" name="password" placeholder="your password">
       </div>
-      
-      <button type="submit" class="btn-primary">Save</button>
-    </form>
-    
+
+      <button id="saveCredentials" class="btn-primary">Save</button>
+
+      <div class="toggle-row">
+        <span class="toggle-label">Floating button</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="floatingToggle" checked>
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+    </div>
+
     <div id="status" class="status"></div>
   </div>
-  
+
   <script src="popup.js"></script>
 </body>
 </html>
