@@ -1,4 +1,5 @@
 # ALCASAR Easy Login
+Extension permettant de se connecter facilement et rapidement au portail Alcasar.
 
 ## Installation (Chrome)
 
