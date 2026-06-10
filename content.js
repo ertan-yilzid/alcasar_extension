@@ -50,6 +50,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+
+  // Background pushes this when login succeeds on another tab (e.g. popup
+  // triggered login while user was on a non-alcasar page — the login tab
+  // gets redirected to intra, but alcasar tabs with the floating button
+  // still need to update their state).
+  if (request.action === 'loginResult' && request.success) {
+    const btn = document.getElementById(BTN_ID);
+    if (btn) setButtonState(btn, 'connected', request.userName);
+  }
 });
 
 // ── Floating button ──────────────────────────────────────────────────────────
@@ -59,7 +68,7 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubu
 
 const BASE_STYLE = `
   position: fixed;
-  bottom: 24px;
+  top: 24px;
   right: 24px;
   z-index: 2147483647;
   font-family: ${FONT};
@@ -282,6 +291,7 @@ async function pollFloatingUntilConnected(btn) {
 
       if (status && status.clientState === 1) {
         setButtonState(btn, 'connected', status.userName);
+        // Background will redirect this tab to intra; nothing to do here
         return;
       }
     } catch (_) { return; }
