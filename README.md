@@ -20,4 +20,4 @@
 1. Une fois que c'est configuré, clique sur "Connexion".
 2. T'es connecté au portail ALCASAR automatiquement.
 
-Un bouton flottant apparaît aussi en bas à droite des pages Alcasar pour faciliter la connexion. Tu peux le désactiver depuis ⚙️.
+Un bouton flottant apparaît aussi en haut à droite des pages Alcasar pour faciliter la connexion. Tu peux le désactiver depuis ⚙️.
