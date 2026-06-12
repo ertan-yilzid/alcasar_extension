@@ -255,8 +255,17 @@ async function injectFloatingButton() {
         if (document.getElementById(BTN_ID)) setButtonState(btn, 'idle', null);
       }, 3000);
     } else if (loginInProgress) {
-      setButtonState(btn, 'loading', null);
-      pollFloatingUntilConnected(btn);
+      // Double-check: the flag may be stale from a previous browser session
+      // that was closed before the login completed. If the status API shows
+      // we are NOT logged in, discard the flag and start fresh.
+      if (clientState === 1) {
+        // Already connected — flag cleanup handled below
+        setButtonState(btn, 'connected', userName);
+      } else {
+        // Status says not logged in; treat the flag as stale and reset it.
+        chrome.storage.local.remove('loginInProgress');
+        setButtonState(btn, 'idle', null);
+      }
     } else {
       setButtonState(btn, 'idle', null);
     }
