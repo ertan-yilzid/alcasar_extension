@@ -1,5 +1,18 @@
 const STATUS_URL = 'https://alcasar.laplateforme.io:3991/json/status';
 
+// Clear any stale login state left over from a previous browser session.
+// Without this, loginInProgress=true survives a reboot and makes the floating
+// button show "logging in" on every cold start.
+chrome.runtime.onStartup.addListener(() => {
+  chrome.storage.local.remove(['loginInProgress', 'loginError']);
+});
+
+// Also clear on install/update, in case the service worker was previously
+// killed mid-login (e.g. Chrome was force-quit).
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.remove(['loginInProgress', 'loginError']);
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startLogin') {
     handleLogin(sendResponse, sender.tab ? sender.tab.id : null);
